@@ -1,0 +1,29 @@
+cmake_minimum_required(VERSION 3.5)
+project(titatit_description)
+  set(INSTALL_DIRS
+    xacro
+    mujoco
+    meshes
+  )
+
+set(ROS_VERSION_ENV "$ENV{ROS_VERSION}")
+if(ROS_VERSION_ENV STREQUAL "1")
+  # In ROS1 compilation environment
+  message("Currently in ROS1 compilation environment")
+
+  find_package(catkin REQUIRED COMPONENTS roscpp)
+
+  catkin_package(CATKIN_DEPENDS)
+
+  # Install directories 'meshes' and 'urdf' to the package share directory
+  install(DIRECTORY ${INSTALL_DIRS} DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
+else()
+  # In ROS2 compilation environment
+  message("Currently in ROS2 compilation environment")
+
+  find_package(ament_cmake REQUIRED)
+
+  install(DIRECTORY ${INSTALL_DIRS} DESTINATION share/${PROJECT_NAME})
+
+  ament_package()
+endif()
