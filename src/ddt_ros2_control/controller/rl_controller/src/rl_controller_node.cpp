@@ -14,6 +14,8 @@
 
 #include "rl_controller/rl_controller_node.hpp"
 
+#include <cmath>
+
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include "pluginlib/class_list_macros.hpp"
@@ -60,12 +62,16 @@ controller_interface::CallbackReturn RlController::on_configure(
     joints_.emplace_back(joint);
   }
   // topics QoS
+  rclcpp::QoS cmd_vel_qos(10);
+  cmd_vel_qos.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
+  cmd_vel_qos.durability(RMW_QOS_POLICY_DURABILITY_VOLATILE);
+
   rclcpp::QoS qos(rclcpp::QoSInitialization::from_rmw(rmw_qos_profile_default));
   qos.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
   qos.durability(RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL);
   qos.history(RMW_QOS_POLICY_HISTORY_KEEP_LAST).keep_last(10);
   cmd_vel_subscription_ = get_node()->create_subscription<geometry_msgs::msg::Twist>(
-    ros_topic::manager_twist_command, rclcpp::SystemDefaultsQoS(),
+    ros_topic::manager_twist_command, cmd_vel_qos,
     std::bind(&RlController::cmd_vel_cb, this, std::placeholders::_1));
   posestamped_subscription_ = get_node()->create_subscription<geometry_msgs::msg::PoseStamped>(
     ros_topic::manager_pose_command, rclcpp::SystemDefaultsQoS(),
@@ -318,6 +324,13 @@ void RlController::cmd_vel_cb(const geometry_msgs::msg::Twist::SharedPtr msg)
   cmd->twist_angular[point::X] = msg->angular.x;
   cmd->twist_angular[point::Y] = msg->angular.y;
   cmd->twist_angular[point::Z] = msg->angular.z;
+  if (std::isnan(last_logged_cmd_vel_x_) ||
+    std::abs(cmd->twist_linear[point::X] - last_logged_cmd_vel_x_) > 1e-6)
+  {
+    RCLCPP_INFO(
+      get_node()->get_logger(), "Received cmd_vel: x=%.3f", cmd->twist_linear[point::X]);
+    last_logged_cmd_vel_x_ = cmd->twist_linear[point::X];
+  }
 }
 
 void RlController::posestamped_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -337,6 +350,10 @@ void RlController::fsm_goal_cb(const std_msgs::msg::String::SharedPtr msg)
   std::lock_guard<std::mutex> lock(fsm_goal_mutex_);
   auto cmd = controlData_->rc_data;
   cmd->fsm_name_ = msg->data;
+  if (msg->data != last_logged_fsm_goal_) {
+    RCLCPP_INFO(get_node()->get_logger(), "Received FSM goal: %s", msg->data.c_str());
+    last_logged_fsm_goal_ = msg->data;
+  }
 }
 
 void RlController::joy_cb(const sensor_msgs::msg::Joy::SharedPtr msg)

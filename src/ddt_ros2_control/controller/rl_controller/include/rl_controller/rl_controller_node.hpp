@@ -16,6 +16,7 @@
 #define RL_CONTROLLER__RL_CONTROLLER_NODE_HPP_
 
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -110,6 +111,8 @@ protected:
   int init_estimator_count_{0};
   std::shared_ptr<FSM> FSMController_;
   std::shared_ptr<ControlFSMData> controlData_;
+  std::string last_logged_fsm_goal_;
+  scalar_t last_logged_cmd_vel_x_{std::numeric_limits<scalar_t>::quiet_NaN()};
   std::mutex mutex_;
   std::mutex cmd_vel_mutex_, pose_stamped_mutex_, fsm_goal_mutex_, joy_mutex_, rigid_body_mutex_;
 };

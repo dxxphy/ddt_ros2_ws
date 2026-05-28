@@ -14,8 +14,6 @@
 
 #include "rl_controller/fsm/FSMState_JointPD.h"
 
-#include "rl_controller/common/Math/orientation_tools.h"
-
 FSMState_JointPD::FSMState_JointPD(std::shared_ptr<ControlFSMData> data)
 : FSMState(data, "joint_pd")
 {
@@ -66,17 +64,7 @@ void FSMState_JointPD::run()
     _data->low_cmd->kp[i] = 0.0;
     _data->low_cmd->kd[i] = 0.5;
   }
-  if (iter_++ % 100 == 0) {
-    auto rBody = ori::quaternionToRotationMatrix(_data->low_state->quat);
-    Vec3<scalar_t> gravity = rBody * Vec3<scalar_t>(0.0, 0.0, -1.0);
-    DVec<scalar_t> q_error = _data->low_cmd->qd - _data->low_state->q;
-    for (auto i : _data->params->wheel_indices) {
-      q_error[i] = 0.0;
-    }
-    std::cout << "[FSMState_JointPD] q_err_norm=" << q_error.norm()
-              << " gravity=(" << gravity.transpose() << ")"
-              << std::endl;
-  }
+  ++iter_;
 }
 
 /**
