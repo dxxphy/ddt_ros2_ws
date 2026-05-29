@@ -1,11 +1,18 @@
 # Titatit MuJoCo Sim2Sim 项目
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![ROS 2](https://img.shields.io/badge/ROS%202-Humble-green.svg)](https://docs.ros.org/en/humble/)
-
 ## 📋 项目概述
 
 本项目旨在让 `titatit` 轮式四足机器人在 MuJoCo 物理仿真环境中稳定运行，通过部署 IsaacGym 训练的 ONNX 强化学习策略，实现 Sim2Sim（仿真到仿真）的迁移。
+
+## 🔧 修复说明
+
+本项目基于 [ddt_ros2_control](https://github.com/DDTRobot/ddt_ros2_control) 进行开发。
+
+由于官方对 MuJoCo 平台 Sim2Sim 的支持尚不完善，存在以下问题：
+- Controller 与 MuJoCo 不适配
+- MuJoCo 下的 Titatit asset 缺失
+
+为了解决这些问题，我参考了 [官方训练仓库](https://github.com/DDTRobot/tita_rl) 中提供的 titatit asset，并对其进行了适配性修改，使其能够在 MuJoCo 仿真环境中稳定运行，同时修改controller，使各参数配置与训练参数对齐。
 
 ### 核心目标
 
@@ -13,6 +20,63 @@
 - ✅ 确保 MuJoCo 模型、关节、初始姿态、控制参数与训练环境一致
 - ✅ 实现稳定的状态机切换：`idle → joint_pd → rl_flat`
 - ✅ 支持复杂地形场景的验证
+
+---
+
+### 环境配置（Docker）
+
+#### 下载docker镜像
+```
+docker pull registry.cn-hangzhou.aliyuncs.com/ddt_robot/run_ddt_tita:v1.0
+```
+
+#### 启动 docker
+
+```
+sudo docker run -v path/above/your/project:/mnt/dev -w /mnt/dev --rm  --gpus all --net=host --privileged -e DISPLAY=$DISPLAY -e QT_X11_NO_MITSHM=1  -e CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda -it registry.cn-hangzhou.aliyuncs.com/ddt_robot/run_ddt_tita:v1.0
+
+# 举个例子：
+docker run -it \
+  --name tita_container \
+  -v ~/ddt_ros2_ws:/mnt/dev \
+  -v /home/dxx/TensorRT-10.13.0.35:/opt/tensorrt \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -w /mnt/dev \
+  --gpus '"device=1"' \
+  --net=host \
+  --privileged \
+  -e DISPLAY=$DISPLAY \
+  -e QT_X11_NO_MITSHM=1 \
+  -e CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda \
+  -e MUJOCO_GL=glfw \
+  registry.cn-hangzhou.aliyuncs.com/ddt_robot/run_ddt_tita:v1.0
+```
+
+#### 进入容器终端
+```
+docker exec -it tita_container /bin/bash
+```
+#### 构建项目空间  
+以下命令展示了所有可行的编译命令，根据你的实际需要选择必要的组件进行编译。
+```bash
+# 创建并进入工作空间
+mkdir -p ~/ddt_ros2_ws && cd ~/ddt_ros2_ws
+# 将下载的仓库ddt_ros2_control放置于 ~/ddt_ros2_ws/并且重命名为src
+mv ddt_ros2_control src
+# 若使用mujoco，执行下方
+git clone -b 3.3.0 https://github.com/google-deepmind/mujoco.git
+# 构建
+cd ~/ddt_ros2_ws
+# 编译
+colcon build --symlink-install --packages-up-to rl_controller d1_description d1h_description tita_description titatit_description teleop_command keyboard_controller mujoco_bridge # 其中mujoco_bridge可替换为gazebo_bridge，webots_bridge
+# 载入环境
+source install/setup.bash
+# 确保使用nvidia gpu进行渲染而非mesa
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+export __NV_PRIME_RENDER_OFFLOAD=1
+```
+
+---
 
 ### 工作空间
 
@@ -22,6 +86,61 @@
 | Docker 容器内 | `/mnt/dev` |
 | 训练仓库 | `/home/dxx/quadruped-wheel-titatit-rl` |
 
+---
+## 🏃 启动指南
+
+### 编译
+
+在 Docker 容器内：
+
+```bash
+cd /mnt/dev
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select titatit_description mujoco_sim_ros2 mujoco_ros2_control rl_controller
+source install/setup.bash
+```
+
+### 基础启动
+
+默认启动（带 GUI）：
+
+```bash
+ros2 launch rl_controller sim_mujoco.launch.py robot:=titatit
+```
+
+### 常用启动参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `headless` | `false` | 是否无头模式（无 GUI） |
+| `startup_pause_sec` | `6.0` | 启动暂停时间（秒） |
+| `rl_warmup_sec` | `3.0` | RL 预热时间（秒） |
+| `cmd_vel_x` | `1.0` | 前进速度命令 |
+| `autostart` | `true` | 是否自动发布状态切换命令 |
+
+### 自定义参数启动
+
+```bash
+ros2 launch rl_controller sim_mujoco.launch.py \
+  robot:=titatit \
+  headless:=false \
+  startup_pause_sec:=8.0 \
+  rl_warmup_sec:=3.0 \
+  cmd_vel_x:=0.0
+```
+### 启动流程
+
+```
+1. MuJoCo 物理仿真启动
+2. ROS2 控制器和 broadcaster 加载
+3. 进入 idle 状态（机器人被支撑）
+4. 等待 startup_pause_sec 秒
+5. 发布 joint_pd 命令（机器人移动到训练默认姿态）
+6. 等待关节误差收敛
+7. 发布 cmd_vel 命令
+8. 发布 rl_0 命令（RL 接管）
+9. RL 策略开始控制
+```
 ---
 
 ## 📁 项目结构
@@ -67,76 +186,10 @@ ddt_ros2_ws/
 | Action Scale | `0.25` | 动作缩放系数 |
 | Hip Scale Reduction | `0.5` | 髋关节缩放减少 |
 
-### 轮子扭矩公式
-
-```python
-wheel_torque = 10 * action_scaled[wheel] - 0.5 * dof_vel[wheel]
-```
-
-### 训练默认关节角
-
-根据训练配置文件 `configs/wheeled_titatit_constraint_him.py`：
-
-```python
-default_joint_angles = {
-    'FL_hip_joint': 0.1,
-    'RL_hip_joint': 0.1,
-    'FR_hip_joint': -0.1,
-    'RR_hip_joint': -0.1,
-
-    'FL_thigh_joint': 1.0,
-    'RL_thigh_joint': -0.8,
-    'FR_thigh_joint': 1.0,
-    'RR_thigh_joint': -0.8,
-
-    'FL_calf_joint': -1.5,
-    'RL_calf_joint': 1.5,
-    'FR_calf_joint': -1.5,
-    'RR_calf_joint': 1.5,
-
-    'FL_foot_joint': 0.0,
-    'RL_foot_joint': 0.0,
-    'FR_foot_joint': 0.0,
-    'RR_foot_joint': 0.0,
-}
-```
-
-按腿部组织（hip, thigh, calf, wheel）：
-
-```text
-FL: [ 0.1,  1.0, -1.5, 0.0]
-FR: [-0.1,  1.0, -1.5, 0.0]
-RL: [ 0.1, -0.8,  1.5, 0.0]
-RR: [-0.1, -0.8,  1.5, 0.0]
-```
-
-ROS2 控制器中的数组形式（FL, FR, RL, RR 顺序）：
-
-```yaml
-default_joint_angles: [0.1, 1.0, -1.5, 0.0, -0.1, 1.0, -1.5, 0.0, 0.1, -0.8, 1.5, 0.0, -0.1, -0.8, 1.5, 0.0]
-```
-
-### 关节重排映射 (Reindex)
-
-训练侧使用 Unitree 风格顺序 `FR, FL, RR, RL`，而 ROS 控制器使用 `FL, FR, RL, RR`。
-
-```python
-reindex = [4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11]
-```
-
-**重要**：这是 Sim2Sim 部署的关键参数，错误会导致策略控制的腿和实际控制的腿不一致。
 
 ---
 
 ## 🚀 部署说明
-
-### ONNX 模型
-
-当前使用的模型文件：
-
-```bash
-src/ddt_ros2_control/controller/rl_controller/config/titatit/model_6000.onnx
-```
 
 ### 模型输入/输出规格
 
@@ -183,179 +236,7 @@ rl_flat:
 
 ---
 
-## 🏃 启动指南
 
-### 编译
-
-在 Docker 容器内：
-
-```bash
-cd /mnt/dev
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select titatit_description mujoco_sim_ros2 mujoco_ros2_control rl_controller
-source install/setup.bash
-```
-
-### 基础启动
-
-默认启动（带 GUI）：
-
-```bash
-ros2 launch rl_controller sim_mujoco.launch.py robot:=titatit
-```
-
-### 常用启动参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `headless` | `false` | 是否无头模式（无 GUI） |
-| `startup_pause_sec` | `6.0` | 启动暂停时间（秒） |
-| `rl_warmup_sec` | `3.0` | RL 预热时间（秒） |
-| `cmd_vel_x` | `1.0` | 前进速度命令 |
-| `autostart` | `true` | 是否自动发布状态切换命令 |
-
-### Headless 模式启动
-
-```bash
-ros2 launch rl_controller sim_mujoco.launch.py robot:=titatit headless:=true
-```
-
-### 自定义参数启动
-
-```bash
-ros2 launch rl_controller sim_mujoco.launch.py \
-  robot:=titatit \
-  headless:=false \
-  startup_pause_sec:=8.0 \
-  rl_warmup_sec:=3.0 \
-  cmd_vel_x:=0.0
-```
-
-### 零速度回归测试（45秒超时）
-
-```bash
-timeout 45s ros2 launch rl_controller sim_mujoco.launch.py \
-  robot:=titatit \
-  headless:=true \
-  startup_pause_sec:=8.0 \
-  rl_warmup_sec:=3.0 \
-  cmd_vel_x:=0.0
-```
-
-### 启动流程
-
-```
-1. MuJoCo 物理仿真启动
-2. ROS2 控制器和 broadcaster 加载
-3. 进入 idle 状态（机器人被支撑）
-4. 等待 startup_pause_sec 秒
-5. 发布 joint_pd 命令（机器人移动到训练默认姿态）
-6. 等待关节误差收敛
-7. 发布 cmd_vel 命令
-8. 发布 rl_0 命令（RL 接管）
-9. RL 策略开始控制
-```
-
----
-
-## 🔧 已修复的核心问题
-
-### 1. ✅ MuJoCo 启动时控制器未及时介入
-- **问题**：MuJoCo 物理已运行，但控制器未完全加载，导致机器人悬空下落
-- **修复**：增加启动暂停、优化加载时序、延长 spawner 超时时间
-
-### 2. ✅ MuJoCo ros2_control 扭矩写入路径错误
-- **问题**：对 actuator joint 应写 `mj_data_->ctrl`，但错误地写入了 `qfrc_applied`
-- **修复**：注册 actuator id，正确写入 `ctrl[]`，读取 `actuator_force`
-
-### 3. ✅ MuJoCo sensor 注册索引错误
-- **问题**：使用 `sensor_index` 导致多 sensor 时越界或绑定错误
-- **修复**：改为使用 `back()` 获取刚 push 的 sensor data
-
-### 4. ✅ 初始姿态没有严格使用 MuJoCo home keyframe
-- **问题**：依赖 ros2_control 初值，不能保证与训练默认姿态一致
-- **修复**：优先读取并应用 MuJoCo `home` keyframe
-
-### 5. ✅ idle 状态没有支撑机器人
-- **问题**：`idle` 状态机器人自由下落或姿态偏移
-- **修复**：在 `idle` 中使用 `joint_pd.target_jpos` 主动支撑
-
-### 6. ✅ joint_pd 目标和日志不足
-- **问题**：`joint_pd` 保持当前姿态而非训练默认姿态，缺少诊断日志
-- **修复**：新增 `target_jpos` 参数，增加低频日志
-
-### 7. ✅ RL 策略配置与训练不一致
-- **问题**：默认角、PD gains、action scale 等与训练配置不一致
-- **修复**：全面对齐训练参数，包括 wheel torque 公式
-
-### 8. ✅ RL 动作滤波语义错误
-- **问题**：滤波实现与训练不一致（对已滤波动作继续滤波）
-- **修复**：使用原始动作历史做滤波，严格匹配训练代码
-
-### 9. ✅ RL 观测/动作关节顺序错误 ⚠️ **核心问题**
-- **问题**：训练使用 `FR, FL, RR, RL` 顺序，部署错误使用 identity
-- **修复**：设置正确的 reindex 映射，这是 RL 接管后失稳的核心原因
-
-### 10. ✅ ONNX 输入/输出处理增强
-- **问题**：默认假设固定输入形式，不够稳健
-- **修复**：根据输入数量自动选择单/双输入模式，增加 shape 检查
-
-### 11. ✅ MuJoCo 模型和资源安装
-- **问题**：`titatit_description` 未完整安装资源
-- **修复**：安装 `mujoco`、`meshes` 等目录，修复 CMake 判断
-
-### 12. ✅ MuJoCo robot.xml 清理
-- **问题**：Joint 的 `ref` 和 `home qpos` 同时带非零值，造成混淆
-- **修复**：统一 `ref` 为 `0`，使用 `home` keyframe 存储初始姿态
-
----
-
-
-
-## 📝 相关文件清单
-
-### RL Controller
-
-- `src/ddt_ros2_control/controller/rl_controller/config/titatit/controllers.yaml`
-  - 对齐训练参数、模型路径、PD gains、action scale、关节重排
-- `src/ddt_ros2_control/controller/rl_controller/include/rl_controller/common/RobotParameters.h`
-  - 新增参数定义
-- `src/ddt_ros2_control/controller/rl_controller/include/rl_controller/fsm/FSMState_RL.h`
-  - 增加 control action buffer、raw action history
-- `src/ddt_ros2_control/controller/rl_controller/src/fsm/FSMState_RL.cpp`
-  - 修复 ONNX 输入、动作滤波、wheel torque、观测/动作顺序
-- `src/ddt_ros2_control/controller/rl_controller/src/fsm/FSMState_JointPD.cpp`
-  - 使用目标站姿、wheel 特殊处理、增加日志
-- `src/ddt_ros2_control/controller/rl_controller/src/fsm/FSMState_Passive.cpp`
-  - idle 阶段主动支撑机器人
-- `src/ddt_ros2_control/controller/rl_controller/launch/sim_mujoco.launch.py`
-  - 重构 MuJoCo launch、自动状态切换
-
-### MuJoCo Bridge
-
-- `src/ddt_ros2_control/simulation/mujoco_bridge/mujoco_ros2_control/include/mujoco_ros2_control/mujoco_system.hpp`
-  - 保存 actuator id
-- `src/ddt_ros2_control/simulation/mujoco_bridge/mujoco_ros2_control/src/mujoco_system.cpp`
-  - 修复 actuator effort 读写、sensor 注册、home keyframe 初始化
-- `src/ddt_ros2_control/simulation/mujoco_bridge/mujoco_ros2_control/src/mujoco_ros2_control.cpp`
-  - 支持从参数读取 `robot_description`
-- `src/ddt_ros2_control/simulation/mujoco_bridge/mujoco_sim_ros2/src/main.cc`
-  - 增加 headless 运行模式和 startup pause
-
-### Robot Description
-
-- `src/ddt_ros2_control/urdfs/titatit_description/CMakeLists.txt`
-  - 安装 MuJoCo 和 mesh 资源
-- `src/ddt_ros2_control/urdfs/titatit_description/xacro/robot.xacro`
-  - 默认 `hw_env:=mujoco`
-- `src/ddt_ros2_control/urdfs/titatit_description/xacro/ros2control.xacro`
-  - MuJoCo 硬件插件配置
-- `src/ddt_ros2_control/urdfs/titatit_description/mujoco/robot.xml`
-  - MuJoCo robot model（home keyframe、actuator、sensor）
-- `src/ddt_ros2_control/urdfs/titatit_description/mujoco/scene.xml`
-  - MuJoCo scene（复杂地形）
-
----
 
 ## 🔍 日志解读指南
 
@@ -370,21 +251,6 @@ timeout 45s ros2 launch rl_controller sim_mujoco.launch.py \
 | `tau_norm` | `10-30` | 过大说明扭矩过大 |
 | `wheel_vel` | `5-15` | 与命令对应 |
 
-### 典型问题排查
-
-**问题 1：RL 接管后立刻趴地抽搐**
-- 检查：关节顺序（reindex）是否正确
-- 日志：观察 `q_err_norm` 是否突然增大
-
-**问题 2：机器人前栽**
-- 检查：重力向量 `gravity` 是否偏离 `(0, 0, -1)`
-- 日志：观察 `projected gravity` 在 joint_pd 阶段的变化
-
-**问题 3：轮子不转或转速异常**
-- 检查：wheel torque 公式是否正确实现
-- 日志：观察 `wheel_vel` 和 `action norm`
-
----
 
 ## 📚 参考资料
 
@@ -394,23 +260,3 @@ timeout 45s ros2 launch rl_controller sim_mujoco.launch.py \
 - [ONNX Runtime 文档](https://onnxruntime.ai/docs/)
 
 ---
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
-
----
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
----
-
-## 📧 联系方式
-
-如有问题，请通过 GitHub Issues 联系。
-
----
-
-**最后更新**：2026-05-28
