@@ -14,13 +14,15 @@ __pycache__/
 .idea/
 *.swp
 *.swo
+*.codex
 
 # OS
 .DS_Store
 Thumbs.db
 
 # ONNX models (keep small ones, ignore large ones)
-# *.onnx
+*.onnx
+!model_6000.onnx
 
 # TensorRT engines
 *.engine
@@ -31,3 +33,4 @@ MUJOCO_LOG.TXT
 # Temporary files
 *.tmp
 *.bak
+*.zip

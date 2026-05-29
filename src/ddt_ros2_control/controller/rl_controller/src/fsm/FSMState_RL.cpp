@@ -79,23 +79,9 @@ void FSMState_RL::enter()
     q_error[i] = 0.0f;
   }
   std::cout << "[FSMState_RL enter] gravity=(" << obs_.gravity.transpose()
-            << ") quat=(" << _data->low_state->quat.transpose()
-            << ") q_norm=" << q.norm()
-            << " default_q_norm=" << default_q.norm()
-            << " q_err_norm_no_wheel=" << q_error.norm()
+            << ") q_err_norm_no_wheel=" << q_error.norm()
             << " command=(" << obs_.commands.transpose() << ")"
             << std::endl;
-  for (Eigen::Index i = 0; i < q.size(); ++i) {
-    const bool is_wheel_joint =
-      std::find(_data->params->wheel_indices.begin(), _data->params->wheel_indices.end(), i) !=
-      _data->params->wheel_indices.end();
-    std::cout << "  [FSMState_RL enter] joint[" << i << "]"
-              << (is_wheel_joint ? " wheel" : " leg")
-              << " q=" << q[i]
-              << " default=" << default_q[i]
-              << " delta=" << (q[i] - default_q[i])
-              << std::endl;
-  }
   threadRunning = true;
   if (thread_first_) {
     forward_thread = std::thread(&FSMState_RL::update_forward, this);
@@ -111,7 +97,6 @@ void FSMState_RL::run()
   _data->low_cmd->zero();
   DVec<tensor_element_t> pos = d2f(_data->low_state->q);
   DVec<tensor_element_t> vel = d2f(_data->low_state->dq);
-  DVec<tensor_element_t> target_pos = pos;
   for (auto i : _data->params->wheel_indices) {
     pos[i] = .0f;
   }
@@ -151,7 +136,6 @@ void FSMState_RL::run()
           rl_params_->joint_kp[i] * action_scaled - rl_params_->joint_kd[i] * vel[i];
       } else {
         const tensor_element_t command = action_scaled + default_angle;
-        target_pos[i] = command;
         _data->low_cmd->kp(i) = rl_params_->joint_kp[i];
         _data->low_cmd->kd(i) = rl_params_->joint_kd[i];
         _data->low_cmd->qd(i) = command;
@@ -161,9 +145,6 @@ void FSMState_RL::run()
     } else if (rl_params_->control_type == "P_V") {
       tensor_element_t command =
         action_scaled + default_angle;
-      if (!is_wheel_joint) {
-        target_pos[i] = command;
-      }
       _data->low_cmd->kp(i) = is_wheel_joint ? 0.0 : rl_params_->joint_kp[i];
       _data->low_cmd->kd(i) = rl_params_->joint_kd[i];
       _data->low_cmd->qd(i) = is_wheel_joint ? 0.0 : command;
@@ -175,22 +156,7 @@ void FSMState_RL::run()
     // torque *= rl_params_->output_torque_scale;
     // torques.push_back(torque);
   }
-  if (control_iter_++ % 100 == 0) {
-    DVec<tensor_element_t> pos_error = target_pos - pos;
-    for (auto i : _data->params->wheel_indices) {
-      pos_error[i] = 0.0f;
-    }
-    std::cout << "[FSMState_RL control] q_norm=" << pos.norm()
-              << " dq_norm=" << vel.norm()
-              << " pos_err_norm=" << pos_error.norm()
-              << " tau_norm=" << d2f(_data->low_cmd->tau_cmd).norm()
-              << " wheel_vel=("
-              << vel[_data->params->wheel_indices[0]] << ", "
-              << vel[_data->params->wheel_indices[1]] << ", "
-              << vel[_data->params->wheel_indices[2]] << ", "
-              << vel[_data->params->wheel_indices[3]] << ")"
-              << std::endl;
-  }
+  ++control_iter_;
   // _data->low_cmd->tau_cmd = f2d(vectorToEigen(torques));
 }
 
@@ -374,13 +340,7 @@ void FSMState_RL::update_forward()
         new_action_weight * raw_control_action_vec_ +
         (1.0f - new_action_weight) * last_raw_control_action_vec_;
       last_raw_control_action_vec_ = raw_control_action_vec_;
-      if (iter_++ % 50 == 0) {
-        std::cout << "[FSMState_RL] action_norm=" << action_vec_.norm()
-                  << " control_norm=" << control_action_vec_.norm()
-                  << " gravity=(" << obs_.gravity.transpose() << ")"
-                  << " command=(" << obs_.commands.transpose() << ")"
-                  << std::endl;
-      }
+      ++iter_;
       obs_history_vec_.head(obs_history_vec_.size() - obs_vec_.size()) =
         obs_history_vec_.tail(obs_history_vec_.size() - obs_vec_.size());
       obs_history_vec_.tail(obs_vec_.size()) = obs_vec_;

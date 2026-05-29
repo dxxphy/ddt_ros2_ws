@@ -41,6 +41,8 @@ def launch_setup(context, *args, **kwargs):
         robot_name,
         "controllers.yaml",
     )
+    controller_manager_timeout_sec = "40"
+    controller_service_call_timeout_sec = "10"
 
     mujoco_simulate_app = Node(
         package='mujoco_sim_ros2',
@@ -76,6 +78,10 @@ def launch_setup(context, *args, **kwargs):
             "joint_state_broadcaster",
             "--controller-manager",
             ns + "/controller_manager",
+            "--controller-manager-timeout",
+            controller_manager_timeout_sec,
+            "--service-call-timeout",
+            controller_service_call_timeout_sec,
             "--switch-timeout",
             "20",
         ],
@@ -87,6 +93,10 @@ def launch_setup(context, *args, **kwargs):
             "imu_sensor_broadcaster",
             "--controller-manager",
             ns + "/controller_manager",
+            "--controller-manager-timeout",
+            controller_manager_timeout_sec,
+            "--service-call-timeout",
+            controller_service_call_timeout_sec,
             "--switch-timeout",
             "20",
         ],
@@ -99,6 +109,10 @@ def launch_setup(context, *args, **kwargs):
             robot_name + "_rl_controller",
             "--controller-manager",
             ns + "/controller_manager",
+            "--controller-manager-timeout",
+            controller_manager_timeout_sec,
+            "--service-call-timeout",
+            controller_service_call_timeout_sec,
             "--switch-timeout",
             "20",
         ],
@@ -106,43 +120,121 @@ def launch_setup(context, *args, **kwargs):
     topic_prefix = "/" + ns.strip("/") if ns.strip("/") else ""
     cmd_key_topic = topic_prefix + "/command/cmd_key"
     cmd_twist_topic = topic_prefix + "/command/cmd_twist"
+
     autostart_actions = []
     if autostart:
-        joint_pd_action = ExecuteProcess(
-            cmd=[
-                "ros2", "topic", "pub", "--once", cmd_key_topic,
-                "std_msgs/msg/String", "{data: joint_pd}",
-            ],
-            output="screen",
-        )
-        # Publish joint_pd as soon as the controller is active.  MuJoCo may
-        # still be in startup_pause_sec, but the subscription callback is spun
-        # by the controller-manager executor; the first physics/control update
-        # will then enter joint_pd instead of spending live physics time in idle.
-        autostart_actions.append(TimerAction(period=0.2, actions=[joint_pd_action]))
-
-        delayed_rl_actions = []
-        if abs(cmd_vel_x) > 1e-9:
-            delayed_rl_actions.append(
-                ExecuteProcess(
-                    cmd=[
-                        "ros2", "topic", "pub", "--once", cmd_twist_topic,
-                        "geometry_msgs/msg/Twist",
-                        "{linear: {x: " + str(cmd_vel_x) + ", y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}",
-                    ],
-                    output="screen",
-                )
-            )
-        rl_start_action = ExecuteProcess(
-            cmd=[
-                "ros2", "topic", "pub", "--once", cmd_key_topic,
-                "std_msgs/msg/String", "{data: rl_0}",
-            ],
-            output="screen",
-        )
-        delayed_rl_actions.append(TimerAction(period=0.2, actions=[rl_start_action]))
         rl_delay_sec = max(0.5, startup_pause_sec + rl_warmup_sec + 0.5)
-        autostart_actions.append(TimerAction(period=rl_delay_sec, actions=delayed_rl_actions))
+        autostart_actions.append(
+            ExecuteProcess(
+                cmd=[
+                    "python3",
+                    "-c",
+                    r"""
+import sys
+import time
+
+import rclpy
+from geometry_msgs.msg import Twist
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
+
+
+def wait_for_subscribers(node, publisher, topic_name, timeout_sec):
+    deadline = time.monotonic() + timeout_sec
+    while rclpy.ok() and time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.05)
+        if publisher.get_subscription_count() > 0:
+            return True
+    node.get_logger().warn(
+        "Timed out waiting for a subscriber on {}".format(topic_name)
+    )
+    return False
+
+
+def publish_for(node, publisher, msg, topic_name, duration_sec, rate_hz):
+    wait_for_subscribers(node, publisher, topic_name, 10.0)
+    period = 1.0 / rate_hz
+    deadline = time.monotonic() + duration_sec
+    while rclpy.ok() and time.monotonic() < deadline:
+        publisher.publish(msg)
+        rclpy.spin_once(node, timeout_sec=0.01)
+        time.sleep(period)
+
+
+cmd_key_topic = sys.argv[1]
+cmd_twist_topic = sys.argv[2]
+cmd_vel_x = float(sys.argv[3])
+rl_delay_sec = float(sys.argv[4])
+
+rclpy.init()
+node = rclpy.create_node("titatit_mujoco_autostart")
+
+key_qos = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
+twist_qos = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.VOLATILE,
+)
+key_pub = node.create_publisher(String, cmd_key_topic, key_qos)
+twist_pub = node.create_publisher(Twist, cmd_twist_topic, twist_qos)
+
+joint_pd_msg = String()
+joint_pd_msg.data = "joint_pd"
+node.get_logger().info("Publishing joint_pd")
+publish_for(node, key_pub, joint_pd_msg, cmd_key_topic, 0.8, 10.0)
+
+deadline = time.monotonic() + rl_delay_sec
+while rclpy.ok() and time.monotonic() < deadline:
+    rclpy.spin_once(node, timeout_sec=0.05)
+    time.sleep(0.05)
+
+if abs(cmd_vel_x) > 1e-9:
+    twist_msg = Twist()
+    twist_msg.linear.x = cmd_vel_x
+    node.get_logger().info("Publishing cmd_vel x={:.3f}".format(cmd_vel_x))
+    publish_for(node, twist_pub, twist_msg, cmd_twist_topic, 2.0, 20.0)
+
+rl_msg = String()
+rl_msg.data = "rl_0"
+node.get_logger().info("Publishing rl_0")
+publish_for(node, key_pub, rl_msg, cmd_key_topic, 1.0, 10.0)
+
+time.sleep(0.5)
+node.destroy_node()
+rclpy.shutdown()
+""",
+                    cmd_key_topic,
+                    cmd_twist_topic,
+                    str(cmd_vel_x),
+                    str(rl_delay_sec),
+                ],
+                output="screen",
+            )
+        )
+
+    def on_spawner_success(spawner_name, actions):
+        def _on_exit(event, context):
+            if event.returncode == 0:
+                return actions
+            return [
+                launch.actions.LogInfo(
+                    msg=(
+                        spawner_name
+                        + " spawner exited with code "
+                        + str(event.returncode)
+                        + "; dependent startup actions were skipped"
+                    )
+                )
+            ]
+
+        return _on_exit
+
     return [
         mujoco_simulate_app,
         robot_state_publisher,
@@ -150,26 +242,18 @@ def launch_setup(context, *args, **kwargs):
             event_handler=OnProcessStart(
                 target_action=mujoco_simulate_app,
                 on_start=[
-                    TimerAction(
-                        period=2.0,
-                        actions=[
-                            joint_state_broadcaster_spawner,
-                            rl_controller_spawner,
-                        ],
-                    )
+                    joint_state_broadcaster_spawner,
+                    rl_controller_spawner,
                 ],
             )
         ),
         RegisterEventHandler(
             event_handler=OnProcessExit(
                 target_action=rl_controller_spawner,
-                on_exit=[imu_sensor_broadcaster_spawner],
-            )
-        ),
-        RegisterEventHandler(
-            event_handler=OnProcessExit(
-                target_action=rl_controller_spawner,
-                on_exit=autostart_actions,
+                on_exit=on_spawner_success(
+                    robot_name + "_rl_controller",
+                    [imu_sensor_broadcaster_spawner] + autostart_actions,
+                ),
             )
         ),
     ]
@@ -201,7 +285,7 @@ def generate_launch_description():
     declared_arguments.append(
         launch.actions.DeclareLaunchArgument(
             "startup_pause_sec",
-            default_value="3.0",
+            default_value="8.0",
             description="Delay physics stepping after ros2_control is created, giving spawners time to activate controllers",
         )
     )
@@ -222,7 +306,7 @@ def generate_launch_description():
     declared_arguments.append(
         launch.actions.DeclareLaunchArgument(
             "rl_warmup_sec",
-            default_value="1.0",
+            default_value="3.0",
             description="Optional extra time to hold joint_pd before publishing cmd_vel and switching to rl_0",
         )
     )
